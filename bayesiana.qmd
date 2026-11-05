@@ -1,0 +1,404 @@
+---
+title: "Projeto Bayesiana"
+author: "Amanda e Pedro"
+format: html
+editor: visual
+---
+
+# PARTE 1
+
+```{r}
+# Opção 1: Usando o R base (não precisa instalar nada)
+url <- "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+dados_churn <- read.csv(url, stringsAsFactors = FALSE)
+
+# Opção 2: Usando o tidyverse/readr (Recomendado para análise de dados)
+# install.packages("readr") # Instale se não tiver
+library(readr)
+dados_churn <- read_csv(url)
+
+# Dando uma olhada nos dados
+head(dados_churn)
+str(dados_churn)
+```
+
+```{r}
+# Convertendo TotalCharges para numérico (os espaços em branco vão virar NA automaticamente)
+dados_churn$TotalCharges <- as.numeric(dados_churn$TotalCharges)
+```
+
+```{r}
+# Variável resposta
+table(dados_churn$Churn)
+
+# Frequências
+freq <- table(dados_churn$Churn)
+
+# Proporções
+prop.table(freq)
+
+# Taxa de churn
+taxa_churn <- mean(dados_churn$Churn == "Yes")
+taxa_churn
+
+# Resumo numérico
+data.frame(
+  Total_Clientes = nrow(dados_churn),
+  Cancelaram = sum(dados_churn$Churn == "Yes"),
+  Permaneceram = sum(dados_churn$Churn == "No"),
+  Taxa_Churn = taxa_churn
+)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# 1. Preparar os dados (contagem)
+dados_grafico <- dados_churn %>% 
+  count(Churn)
+
+# 2. Criar o gráfico com o tema minimal e números puros
+grafico <- ggplot(dados_grafico, aes(x = Churn, y = n, fill = Churn)) +
+  geom_col(width = 0.5, show.legend = FALSE) + 
+  
+  # Adiciona os números exatos sem formatação (sem ponto e sem vírgula)
+  geom_text(aes(label = n), 
+            vjust = -0.6, 
+            fontface = "bold", 
+            size = 5, 
+            color = "#333333") +
+  
+  # Cores personalizadas (Cinza neutro para 'No' e Vermelho alerta para 'Yes')
+  scale_fill_manual(values = c("No" = "gray", "Yes" = "steelblue")) +
+  
+  # Rótulos e Títulos
+  labs(
+    title = "Distribuição da variável Churn",
+    subtitle = "Evidenciando o desbalanceamento entre clientes ativos e cancelados",
+    x = "Cancelamento",
+    y = "Número de clientes"
+  ) +
+  
+  # Ajusta o limite do eixo Y para o número do topo não cortar
+  scale_y_continuous(limits = c(0, 5600)) + 
+  
+  # Aplica o tema minimalista solicitado
+  theme_minimal(base_size = 12) +
+  
+  # Pequenos ajustes finos sobre o theme_minimal para deixá-lo mais elegante
+  theme(
+    plot.title = element_text(face = "bold", size = 15, color = "#111111", margin = margin(b = 12)),
+    panel.grid.major.x = element_blank(), # Remove as linhas verticais
+  )
+ggsave(
+  filename = "distribuicao_churn.png", # Nome do arquivo (pode mudar para .pdf ou .jpeg)
+  plot = grafico,                # O objeto do gráfico que criamos acima
+  width = 8,                           # Largura da imagem em polegadas (inches)
+  height = 6,                          # Altura da imagem em polegadas
+  dpi = 300,                           # Resolução alta (ideal para relatórios e apresentações)
+  bg = "white"                         # Garante o fundo branco atrás do tema minimalista
+)
+grafico
+```
+
+# PARTE 2
+
+```{r}
+library(readr)
+library(ggplot2)
+library(coda)
+
+url <- "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+
+dados <- read_csv(url)
+
+n <- nrow(dados)
+s <- sum(dados$Churn == "Yes")
+
+n
+s
+```
+
+```{r}
+#priori principal
+a <- 1
+b <- 1
+
+alpha_post <- a + s
+beta_post  <- b + n - s
+```
+
+```{r}
+#metropolis hastings
+logpost <- function(theta){
+
+  if(theta <= 0 || theta >= 1)
+    return(-Inf)
+
+  dbeta(theta,1,1,log=TRUE) +
+    dbinom(s,n,theta,log=TRUE)
+}
+```
+
+```{r}
+#algoritmo
+set.seed(123)
+
+M <- 20000
+
+theta <- numeric(M)
+
+theta[1] <- 0.30
+
+sigma <- 0.03
+
+aceitos <- 0
+
+for(i in 2:M){
+
+  prop <- rnorm(1,theta[i-1],sigma)
+
+  if(prop > 0 && prop < 1){
+
+    logalpha <- logpost(prop) -
+      logpost(theta[i-1])
+
+    if(log(runif(1)) < logalpha){
+
+      theta[i] <- prop
+
+      aceitos <- aceitos + 1
+
+    } else{
+
+      theta[i] <- theta[i-1]
+
+    }
+
+  } else{
+
+    theta[i] <- theta[i-1]
+
+  }
+}
+
+taxa_aceitacao <- aceitos/(M-1)
+taxa_aceitacao
+```
+
+```{r}
+#burn-in
+burn <- 5000
+
+theta_post <- theta[(burn+1):M]
+```
+
+```{r}
+#diagnostico:
+#traceplot:
+plot(theta_post,
+     type="l",
+     main="Traceplot")
+#densidade:
+plot(density(theta_post),
+     main="Densidade Posterior")
+#autocorrelaçao
+acf(theta_post)
+```
+
+```{r}
+library(ggplot2)
+# Instale o patchwork se não tiver, serve para juntar os gráficos: install.packages("patchwork")
+library(patchwork) 
+
+# 1. Transformando o vetor em um data frame
+df_post <- data.frame(
+  Iteracao = 1:length(theta_post),
+  Theta = theta_post
+)
+
+p1 <- ggplot(df_post, aes(x = Iteracao, y = Theta)) +
+  geom_line(color = "black", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Traceplot",
+       x = "Iteração",
+       y = expression(theta))
+
+p2 <- ggplot(df_post, aes(x = Theta)) +
+  geom_density(fill = "#3498db", alpha = 0.4, color = "#2980b9") +
+  theme_minimal() +
+  labs(title = "Densidade Posterior",
+       x = expression(theta),
+       y = "Densidade")
+
+# Calculando a autocorrelação
+acf_values <- acf(theta_post, plot = FALSE)
+df_acf <- data.frame(Lag = acf_values$lag, ACF = acf_values$acf)
+
+p3 <- ggplot(df_acf, aes(x = Lag, y = ACF)) +
+  geom_col(fill = "blue", width = 0.1) +
+  # Linhas de significância tracejadas (IC de 95%)
+  geom_hline(yintercept = c(-1.96/sqrt(length(theta_post)), 1.96/sqrt(length(theta_post))), 
+             linetype = "dashed", color = "#e74c3c", alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "Autocorrelação (ACF)",
+       x = "Lag",
+       y = "ACF")
+p1
+p2
+p3
+```
+
+```{r}
+#estatisticas posterioris:
+media_post <- mean(theta_post)
+
+dp_post <- sd(theta_post)
+
+ic95 <- quantile(
+  theta_post,
+  c(0.025,0.975)
+)
+
+media_post
+dp_post
+ic95
+
+#moda
+moda_post <-
+  (alpha_post - 1) /
+  (alpha_post + beta_post - 2)
+
+moda_post
+```
+
+```{r}
+#estudo de sensibilidade 
+prioris <- data.frame(
+  a = c(1,2,10),
+  b = c(1,2,10)
+)
+
+prioris$media_posterior <- NA
+
+for(i in 1:nrow(prioris)){
+
+  a0 <- prioris$a[i]
+  b0 <- prioris$b[i]
+
+  prioris$media_posterior[i] <-
+    (a0+s)/(a0+b0+n)
+}
+
+prioris
+```
+
+```{r}
+#fator de bayes
+prior_H0 <- pbeta(0.20,1,1)
+prior_H1 <- 1-prior_H0
+
+post_H0 <- pbeta(
+  0.20,
+  alpha_post,
+  beta_post
+)
+
+post_H1 <- 1-post_H0
+
+BF10 <-
+(post_H1/post_H0)/
+(prior_H1/prior_H0)
+
+BF10
+```
+
+```{r}
+#predição posteriori
+#simulação
+set.seed(321)
+
+y_pred <- rbinom(
+  n = length(theta_post),
+  size = 100,
+  prob = theta_post
+)
+#estatistica preditiva
+media_pred <- mean(y_pred)
+
+ic_pred <- quantile(
+  y_pred,
+  c(0.025,0.975)
+)
+
+media_pred
+ic_pred
+```
+
+```{r}
+#histograma
+ggplot(
+  data.frame(y_pred),
+  aes(x = y_pred)
+)+
+geom_histogram(
+  bins = 20
+)+
+labs(
+  title = "Distribuição Preditiva Posterior",
+  x = "Número de cancelamentos em 100 clientes",
+  y = "Frequência"
+)+
+theme_minimal()
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(data.frame(y_pred = y_pred), aes(x = y_pred)) +
+  
+  # Histograma original
+  geom_histogram(
+    bins = 20, 
+    fill = "#3498db", 
+    color = "steelblue", 
+    alpha = 0.5
+  ) +
+  
+  # Linha da Média Preditiva (Tracejada em vermelho)
+  geom_vline(
+    aes(xintercept = media_pred), 
+    color = "#e74c3c", 
+    linetype = "dashed", 
+    linewidth = 1
+  ) +
+  
+  # Linhas do Intervalo de Confiança de 95% (Pontilhadas em cinza escuro)
+  geom_vline(
+    aes(xintercept = ic_pred[1]), 
+    color = "#34495e", 
+    linetype = "dotted", 
+    linewidth = 0.8
+  ) +
+  geom_vline(
+    aes(xintercept = ic_pred[2]), 
+    color = "#34495e", 
+    linetype = "dotted", 
+    linewidth = 0.8
+  ) +
+  
+  # Rótulos e estilo originais
+  labs(
+    title = "Distribuição Preditiva Posterior",
+    subtitle = "Simulação do número de cancelamentos",
+    x = "Número de cancelamentos em 100 clientes",
+    y = "Frequência"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    panel.grid.minor = element_blank()
+  )
+```
